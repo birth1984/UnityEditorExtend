@@ -1,0 +1,715 @@
+using UnityEngine;
+using UnityEditor;
+using System.IO;
+using Unity.EditorCoroutines.Editor;
+using Unity.VisualScripting;
+using UnityEditor.Animations;
+using System.Collections.Generic;
+using static TMPro.SpriteAssetUtilities.TexturePacker_JsonArray;
+using log4net.Util;
+using static UnityEngine.GraphicsBuffer;
+using UnityEngine.TextCore.Text;
+using System;
+[ExecuteInEditMode]
+public class AnimationToPNGWindow : EditorWindow
+{
+    // ----------- Logic Part Start -------------------------------------------
+    public Camera m_renderCamera;
+    public float m_distance = 5.0f;
+    public Vector3 offset;
+    public GameObject m_animatedModel;
+    public Animator m_animator;
+    public AnimatorController m_controller;
+    public AnimationClip[] m_clips;
+    private string m_clipName;
+    public AnimationClip m_playClip;
+    //public int m_frameCount = 8;
+    public string m_outputFolder = "AnimationFrames";
+
+    private RenderTexture m_renderTexture;
+
+    private bool[] selectedOptions = new bool[3];
+    private Dictionary<string, bool> m_clipOptions = new Dictionary<string, bool> ();
+    List<string> m_selectedAnimations = new List<string>();
+
+    List<string> m_allAnimations = new List<string>();
+
+    // ----------- Logic Part End -------------------------------------------
+    // ----------- GUI Part -------------------------------------------
+    private GUIStyle m_textStyle;
+    private GUIStyle m_btnNormalStyle;
+    private GUIStyle m_btnHoverStyle;
+    private GUIStyle m_btnDisenableStyle;
+    //------------ Play Btn //------------
+    private GUIStyle m_currPlayBtnStyle;
+    private bool m_isPlayBtnHover = false;
+    private Rect m_playBtnRect;
+    //------------ Render Btn //------------
+    private GUIStyle m_currRenderBtnStyle;
+    private bool m_isRenderBtnHover = false;
+    private Rect m_renderBtnRect;
+    //------------ 动作Toggle Btn //------------
+    private GUIStyle m_toggleStyle;
+    //-----------------------------------------
+    private Vector2Int m_pngSize = new Vector2Int(1920, 1080);
+    
+
+    enum EBtnState
+    {
+        NORMAL,      //正常
+        HOVER,       //鼠标悬停
+        DISENABLE,   //禁用
+    }
+
+    // ----------- GUI Part -------------------------------------------
+
+
+    [MenuItem("工具/ADs 模型动作3渲2工具")]
+    public static void ShowWindow()
+    {
+        GetWindow<AnimationToPNGWindow>("Render Animation to PNG");  
+    }
+
+    private void InitGUI()
+    {
+        if (!m_renderCamera)
+        {
+            m_renderCamera = Camera.main;
+        }
+
+        if (!m_animatedModel)
+        {
+            m_animatedModel = GameObject.Find("T1_Archer@Tpose");
+        }
+
+        if (!m_animator)
+        {
+            m_animator = m_animatedModel.GetComponent<Animator>();
+        }
+        if (!m_controller)
+        {
+            m_controller = m_animator.runtimeAnimatorController as AnimatorController;
+            m_clips = m_controller.animationClips;
+
+        }
+        if (m_clipOptions.Count == 0)
+        {
+            foreach (AnimationClip clip in m_clips)
+            {
+                m_clipOptions[clip.name] = new BoolClipPair(false, clip);
+            }
+        }
+
+        if (m_textStyle == null)
+        {
+            m_textStyle = new GUIStyle("HeaderLabel");
+        }
+
+        if (m_btnNormalStyle == null)
+        {
+            m_btnNormalStyle = new GUIStyle("flow node 4");
+            m_btnNormalStyle.normal.textColor = Color.white;
+            m_btnHoverStyle = new GUIStyle("flow node 4 on");
+            m_btnDisenableStyle = new GUIStyle("flow node 0");
+            m_currPlayBtnStyle = m_btnNormalStyle;
+        }
+
+
+        if (m_toggleStyle == null)
+        {
+            m_toggleStyle = new GUIStyle("LightmapEditorSelectedHighlight"); // LightmapEditorSelectedHighlight U2D.createRect   WarningOverlay
+            m_toggleStyle.normal.textColor = Color.white;
+        }
+    }
+    private void OnGUI()
+    {
+        InitGUI();
+
+        m_textStyle.fontSize = 28;
+        m_textStyle.normal.textColor = Color.yellow;
+
+        //======================== UI ==============================
+        GUILayout.Space(5);
+        GUILayout.BeginVertical();
+        GUILayout.Label("ADs 模型动作3渲2工具", m_textStyle);
+        m_renderCamera = (Camera)EditorGUILayout.ObjectField("Render Camera", m_renderCamera, typeof(Camera), true);
+        m_animatedModel = (GameObject)EditorGUILayout.ObjectField("Animated Model", m_animatedModel, typeof(GameObject), true);
+        m_animator = (Animator)EditorGUILayout.ObjectField("Animator", m_animator, typeof(Animator), true);
+        
+        GUILayout.BeginHorizontal();
+        
+        EditorGUILayout.Vector2IntField("画布尺寸", m_pngSize);
+        //GUILayout.TextField("1920");
+        //GUILayout.Label("画布高度");
+        //GUILayout.TextField("1080");
+
+        GUILayout.EndHorizontal();
+        //m_frameCount = EditorGUILayout.IntField("Frame Count", m_frameCount);
+        m_outputFolder = EditorGUILayout.TextField("Output Folder", m_outputFolder);
+
+        //if (GUILayout.Button(new GUIContent("node1", EditorGUIUtility.IconContent("node1").image), GUILayout.Height(40)))
+        //{
+        //    PopupWindow.Show(new Rect(100, 100, 300, 150), new ProgressPopupContent());
+        //}
+        //if (GUILayout.Button("Render Animation 待机" , m_btnNormalStyle , GUILayout.Width(150)))
+        //{
+        //    if (m_animator == null)
+        //        m_animator = m_animatedModel.GetComponent<Animator>();
+        //    m_clipName = "待机";
+        //    m_animator.Play(m_clipName);           
+        //    EditorCoroutineUtility.StartCoroutine(RenderAnimation(), this);
+        //}
+        //GUILayout.Space(200);
+        // 定义区域的位置和大小
+        Rect areaRect = new Rect(5, 210, 500, 400);
+        GUILayout.BeginArea(areaRect, GUI.skin.box); // 开始区域，并使用一个盒子样式
+
+
+        List<string> keys = new List<string>(m_clipOptions.Keys);
+        int maxRow = Mathf.CeilToInt(keys.Count / 3.0f);
+        // 在区域内布局元素
+        m_textStyle.fontSize = 18;
+        GUILayout.Label("角色动作Clips" ,m_textStyle);
+        int index = 0;
+        m_textStyle.fontSize = 12;
+        for (int i = 0; i < maxRow; i++) // 5 行
+        {
+            GUILayout.BeginHorizontal(); // 开始水平布局
+
+            for (int j = 0; j < 3; j++) // 3 列
+            {
+                if (j + i * 3 < keys.Count)
+                {                    
+                    string key = keys[j + i * 3];
+                    Texture buttonImage = EditorGUIUtility.FindTexture("d_BuildSettings.PS5");
+                    GUIContent buttonContent = new GUIContent(key, buttonImage, $"时长：");
+                    if (m_clipOptions[key])
+                    {
+                        m_clipOptions[key] = GUILayout.Toggle(m_clipOptions[key], key, m_toggleStyle, GUILayout.Width(130), GUILayout.Height(25));
+                    }
+                    else
+                    {
+                        m_clipOptions[key] = GUILayout.Toggle(m_clipOptions[key], key, GUILayout.Width(130) ,GUILayout.Height(25));
+                    }   
+                }
+                GUILayout.Space(20);
+            }
+            GUILayout.EndHorizontal(); // 结束水平布局
+            GUILayout.Space(20);
+        }
+        GUILayout.BeginHorizontal();
+
+
+
+
+
+
+        if (m_isPlayBtnHover)
+        {
+            if (Event.current.type == EventType.MouseDown)
+            {
+                m_currPlayBtnStyle = m_btnDisenableStyle;
+            }
+            if (Event.current.type == EventType.MouseUp)
+            {
+                m_currPlayBtnStyle = m_btnHoverStyle;
+            }
+        }
+
+        if (!m_isPlayBtnHover)
+        {
+            m_currPlayBtnStyle = m_btnNormalStyle;
+        }
+        
+
+        if (GUILayout.Button("播放", m_currPlayBtnStyle, GUILayout.Width(160), GUILayout.Height(45)))
+        {
+            m_selectedAnimations.Clear();
+            foreach (var kvp in m_clipOptions)
+            {
+                if (kvp.Value)
+                {
+                    m_selectedAnimations.Add(kvp.Key);
+                }
+            }
+            string result = string.Join(",", m_selectedAnimations.ToArray());
+            Debug.Log(result);
+            PlaySelectedAnimations();
+        }
+
+        m_playBtnRect = GUILayoutUtility.GetLastRect();
+
+        if (Event.current.type == EventType.Repaint)
+        {
+            if (GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition))
+            {
+                m_isPlayBtnHover = true;
+            }
+            else
+            {
+                m_isPlayBtnHover = false;
+            }    
+        }
+
+
+        GUILayout.Space(10);
+
+        if (m_isRenderBtnHover)
+        {
+            if (Event.current.type == EventType.MouseDown)
+            {
+                m_currRenderBtnStyle = m_btnDisenableStyle;
+            }
+            if (Event.current.type == EventType.MouseUp)
+            {
+                m_currRenderBtnStyle = m_btnHoverStyle;
+            }
+        }
+
+        if (!m_isRenderBtnHover)
+        {
+            m_currRenderBtnStyle = m_btnNormalStyle;
+        }
+        if (GUILayout.Button("渲染" , m_currRenderBtnStyle , GUILayout.Width(160), GUILayout.Height(45)))
+        {
+            m_selectedAnimations.Clear();
+            foreach (var kvp in m_clipOptions)
+            {
+                if (kvp.Value)
+                {
+                    m_selectedAnimations.Add(kvp.Key);
+                }
+            }
+            string result = string.Join(",", m_selectedAnimations.ToArray());
+            Debug.Log(result);
+            //EditorCoroutineUtility.StartCoroutine(PlaySelectedAnimationsCoroutine(), this);
+            RenderSelectedAnimations();
+        }
+        m_renderBtnRect = GUILayoutUtility.GetLastRect();
+        if (Event.current.type == EventType.Repaint)
+        {
+            if (GUILayoutUtility.GetLastRect().Contains(Event.current.mousePosition))
+            {
+                m_isRenderBtnHover = true;
+            }
+            else
+            {
+                m_isRenderBtnHover = false;
+            }
+        }
+
+
+        GUILayout.EndHorizontal();
+
+        GUILayout.EndArea(); // 结束区域
+
+
+
+        
+
+        GUILayout.Space(500);
+        
+
+        if (GUILayout.Button("Play All Animations"))
+        {
+            if (m_allAnimations.Count == 0)
+            {
+                foreach (AnimationClip clip in m_controller.animationClips)
+                {
+                    m_allAnimations.Add(clip.name);
+                }
+
+            }
+            //EditorCoroutineUtility.StartCoroutine(RenderAllAnimations(), this);
+            RenderAllAnimations();
+        }
+        GUILayout.EndVertical();
+    }
+
+
+
+    // 摘要:
+    //    播放角色选中动作动画
+    //
+    // 参数:
+    //   
+    private void PlaySelectedAnimations()
+    {
+        if (m_selectedAnimations.Count > 0)
+        {
+            Debug.Log($"播放选中动作：{m_selectedAnimations[0]}");
+            m_clipName = m_selectedAnimations[0];
+            m_animator.Play(m_clipName);
+            EditorCoroutineUtility.StartCoroutine(PlayAnimation(), this);
+            m_selectedAnimations.RemoveAt(0);
+            //Debug.Log($"播放完成，还剩{m_selectedAnimations.Count}");
+        }
+        
+        m_animator.Update(0);
+        Debug.Log($"全部完成");
+    }
+
+
+
+ 
+    // 摘要:
+    //    播放角色选中动作动画当前动画
+    //
+    // 参数:
+    //   
+    private System.Collections.IEnumerator PlayAnimation()
+    {
+        if (m_renderCamera == null || m_animatedModel == null)
+        {
+            Debug.LogError("请确保相机和模型都已设置！");
+            yield break;
+        }
+
+        // 创建输出文件夹
+        if (!Directory.Exists(m_outputFolder + "/" + m_clipName))
+        {
+            Directory.CreateDirectory(m_outputFolder + "/" + m_clipName);
+        }
+        else
+        {
+            ClearFiles(m_outputFolder + "/" + m_clipName);
+        }
+        m_playClip = GetAnimationClipFromAnimator(m_animator, m_clipName);
+
+
+        if (m_animator != null)
+        {
+            m_animator.Play(m_clipName, 0, 0);
+            m_animator.Update(0); // 更新到动画的第一帧
+        }
+        int frameCount = Mathf.FloorToInt(m_playClip.length / 0.033f);
+        // 渲染每个方向的帧
+        for (int frame = 0; frame < frameCount; frame++)
+        {
+            // 播放动画到下一帧
+            if (m_animator != null)
+            {
+                if (frame == 0)
+                    m_animator.Update(0); // 更新到动画的第一帧
+                else
+                    m_animator.Update(Time.deltaTime); // 更新动画
+                m_animator.Play(m_animator.GetCurrentAnimatorStateInfo(0).fullPathHash, 0, (float)frame / frameCount);
+                //Debug.Log($"Play:Length: {m_animator.GetCurrentAnimatorStateInfo(0).length}_FullPathHash:{m_animator.GetCurrentAnimatorStateInfo(0).fullPathHash}");
+            }
+
+            // 渲染当前帧
+            yield return new WaitForEndOfFrame();
+
+            yield return null;
+        }
+        Debug.Log($"动画播放完成！{m_clipName}");
+        
+        PlaySelectedAnimations();
+    }
+
+    // 摘要:
+    //    渲染角色选中全部动作动画保存成序列帧
+    //
+    // 参数:
+    // 
+    private void RenderSelectedAnimations()
+    {
+        if (m_selectedAnimations.Count > 0)
+        {
+            Debug.Log($"播放选中动作：{m_selectedAnimations[0]}");
+            m_clipName = m_selectedAnimations[0];
+            m_animator.Play(m_clipName);
+            EditorCoroutineUtility.StartCoroutine(RenderAnimation(), this);
+            m_selectedAnimations.RemoveAt(0);
+            Debug.Log($"播放完成，还剩{m_selectedAnimations.Count}");
+        }
+        Debug.Log($"全部完成");
+    }
+
+    // 摘要:
+    //    渲染角色选中动作动画当前动画保存成序列帧
+    //
+    // 参数:
+    // 
+    private System.Collections.IEnumerator RenderAnimation()
+    {
+        if (m_renderCamera == null || m_animatedModel == null)
+        {
+            Debug.LogError("请确保相机和模型都已设置！");
+            yield break;
+        }
+
+        // 创建输出文件夹
+        if (!Directory.Exists(m_outputFolder + "/" + m_clipName))
+        {
+            Directory.CreateDirectory(m_outputFolder + "/" + m_clipName);
+        }
+        else
+        {
+            ClearFiles(m_outputFolder + "/" + m_clipName);
+        }
+        m_playClip = GetAnimationClipFromAnimator(m_animator, m_clipName);
+        // 渲染8个方向
+        for (int direction = 0; direction < 8; direction++)
+        {
+            // 创建透明的 RenderTexture
+            m_renderTexture = new RenderTexture(1920, 1080, 24, RenderTextureFormat.ARGB32);
+            m_renderCamera.targetTexture = m_renderTexture;
+            // 计算相机的旋转角度
+            float angle = direction * 45f; // 每个方向旋转45度
+            m_animatedModel.transform.rotation = Quaternion.Euler(0, angle, 0);
+
+            if (m_animator != null)
+            {
+                m_animator.Play(m_clipName, 0, 0);
+                m_animator.Update(0); // 更新到动画的第一帧
+            }
+            int frameCount = Mathf.FloorToInt(m_playClip.length / 0.033f);
+            // 渲染每个方向的帧
+            for (int frame = 0; frame < frameCount; frame++)
+            {
+                // 播放动画到下一帧
+                if (m_animator != null)
+                {
+                    if (frame * 0.033f > m_playClip.length)
+                    {
+                        m_animator.Play(m_clipName, 0, 1);
+                        m_animator.Update(m_playClip.length);
+                    }
+                    else
+                    {
+                        float frameTime = frame * 0.033f;
+
+                        float normallizeTime = frameTime / m_playClip.length;
+                        m_animator.Play(m_playClip.name, 0, normallizeTime);
+                        m_animator.Update(frameTime);
+                    }
+                }
+
+                // 渲染当前帧
+                yield return new WaitForEndOfFrame();
+
+                // 将 RenderTexture 转换为 Texture2D
+                RenderTexture.active = m_renderTexture;
+                Texture2D texture = new Texture2D(m_renderTexture.width, m_renderTexture.height, TextureFormat.ARGB32, false);
+                texture.ReadPixels(new Rect(0, 0, m_renderTexture.width, m_renderTexture.height), 0, 0);
+                texture.Apply();
+
+                // 保存为 PNG
+                byte[] bytes = texture.EncodeToPNG();
+                string filePath = Path.Combine(m_outputFolder + "/" + m_clipName + "/", $"{m_clipName}_D{direction}_F{frame:D04}.png");
+
+                File.WriteAllBytes(filePath, bytes);
+                Debug.Log($"Saved: {filePath}");
+
+                // 清理
+                RenderTexture.active = null;
+                DestroyImmediate(texture);
+                yield return null;
+            }
+
+            // 还原相机的目标纹理
+            m_renderCamera.targetTexture = null;
+            m_animatedModel.transform.rotation = Quaternion.Euler(0, 0, 0);
+
+        }
+        Debug.Log("动画渲染完成！");
+        RenderSelectedAnimations();
+    }
+
+    
+    
+
+
+
+    private void RenderAllAnimations()
+    {
+        
+        if (m_allAnimations.Count > 0)
+        {
+            Debug.Log($"播放选中动作：{m_allAnimations[0]}");
+            m_clipName = m_allAnimations[0];
+            m_animator.Play(m_clipName);
+            EditorCoroutineUtility.StartCoroutine(RenderAnimationForAll(), this);
+            m_allAnimations.RemoveAt(0);
+            Debug.Log($"播放完成，还剩{m_allAnimations.Count}");
+        }
+        Debug.Log($"全部完成");
+    }
+
+    // 摘要:
+    //    渲染角色全部动作动画保存成序列帧
+    //
+    // 参数:
+    // 
+    private System.Collections.IEnumerator RenderAnimationForAll()
+    {
+        if (m_renderCamera == null || m_animatedModel == null)
+        {
+            Debug.LogError("请确保相机和模型都已设置！");
+            yield break;
+        }
+
+        // 创建输出文件夹
+        if (!Directory.Exists(m_outputFolder + "/" + m_clipName))
+        {
+            Directory.CreateDirectory(m_outputFolder + "/" + m_clipName);
+        }
+        else
+        {
+            ClearFiles(m_outputFolder + "/" + m_clipName);
+        }
+        m_playClip = GetAnimationClipFromAnimator(m_animator, m_clipName);
+        // 渲染8个方向
+        for (int direction = 0; direction < 8; direction++)
+        {
+            // 创建透明的 RenderTexture
+            m_renderTexture = new RenderTexture(1920, 1080, 24, RenderTextureFormat.ARGB32);
+            m_renderCamera.targetTexture = m_renderTexture;
+            // 计算相机的旋转角度
+            float angle = direction * 45f; // 每个方向旋转45度
+            m_animatedModel.transform.rotation = Quaternion.Euler(0, angle, 0);
+
+            if (m_animator != null)
+            {
+                m_animator.Play(m_clipName, 0, 0);
+                m_animator.Update(0); // 更新到动画的第一帧
+            }
+            int frameCount = Mathf.FloorToInt(m_playClip.length / 0.033f);
+            // 渲染每个方向的帧
+            for (int frame = 0; frame < frameCount; frame++)
+            {
+                // 播放动画到下一帧
+                if (m_animator != null)
+                {
+                    if (frame * 0.033f > m_playClip.length)
+                    {
+                        m_animator.Play(m_clipName, 0, 1);
+                        m_animator.Update(m_playClip.length);
+                    }
+                    else
+                    {
+                        float frameTime = frame * 0.033f;
+
+                        float normallizeTime = frameTime / m_playClip.length;
+                        m_animator.Play(m_playClip.name, 0, normallizeTime);
+                        m_animator.Update(frameTime);
+                    }
+                }
+
+                // 渲染当前帧
+                yield return new WaitForEndOfFrame();
+
+                // 将 RenderTexture 转换为 Texture2D
+                RenderTexture.active = m_renderTexture;
+                Texture2D texture = new Texture2D(m_renderTexture.width, m_renderTexture.height, TextureFormat.ARGB32, false);
+                texture.ReadPixels(new Rect(0, 0, m_renderTexture.width, m_renderTexture.height), 0, 0);
+                texture.Apply();
+
+                // 保存为 PNG
+                byte[] bytes = texture.EncodeToPNG();
+                string filePath = Path.Combine(m_outputFolder + "/" + m_clipName + "/", $"{m_clipName}_D{direction}_F{frame:D04}.png");
+
+                File.WriteAllBytes(filePath, bytes);
+                Debug.Log($"Saved: {filePath}");
+
+                // 清理
+                RenderTexture.active = null;
+                DestroyImmediate(texture);
+                yield return null;
+            }
+
+            // 还原相机的目标纹理
+            m_renderCamera.targetTexture = null;
+            m_animatedModel.transform.rotation = Quaternion.Euler(0, 0, 0);
+
+        }
+        Debug.Log("动画渲染完成！");
+        RenderAllAnimations();
+    }
+
+    private AnimationClip GetAnimationClipFromAnimator(Animator animator, string clipName)
+    {
+        if (animator == null)
+        {
+            Debug.LogError("Animator 组件未指定！");
+            return null;
+        }
+
+        // 获取 Animator Controller
+        AnimatorController animatorController = animator.runtimeAnimatorController as AnimatorController;
+        if (animatorController == null)
+        {
+            Debug.LogError("Animator Controller 未找到！");
+            return null;
+        }
+
+        // 遍历所有状态机中的动画剪辑
+        foreach (var layer in animatorController.layers)
+        {
+            foreach (var state in layer.stateMachine.states)
+            {
+                if (state.state.motion is AnimationClip clip && clip.name == clipName)
+                {
+                    return clip; // 找到匹配的动画剪辑
+                }
+            }
+        }
+
+        return null; // 未找到动画剪辑
+    }
+
+    
+
+    
+
+
+    // 清理全部文件夹
+    private void ClearFiles(string directory)
+    {
+        if (Directory.Exists(directory))
+        {
+            // 获取文件夹下的所有文件
+            string[] files = Directory.GetFiles(directory);
+
+            // 遍历并删除每个文件
+            foreach (string file in files)
+            {
+                try
+                {
+                    File.Delete(file);
+                    Debug.Log("已删除文件: " + file);
+                }
+                catch (IOException e)
+                {
+                    Debug.LogError("删除文件时出错: " + e.Message);
+                }
+            }
+        }        
+    }
+
+
+
+    //float m_perTime;
+    //void OnEnable()
+    //{
+    //    m_perTime = (float)EditorApplication.timeSinceStartup;
+    //    EditorApplication.update += CustomUpdate;
+    //}
+
+    //void OnDisable()
+    //{
+    //    EditorApplication.update -= CustomUpdate;
+    //}
+
+    //void CustomUpdate()
+    //{
+    //    float _nextTime = (float)EditorApplication.timeSinceStartup - m_perTime;
+    //    m_perTime = (float)EditorApplication.timeSinceStartup;
+    //    if (!m_animator)
+    //    {
+    //        m_animator = m_animatedModel.GetComponent<Animator>();
+    //    }
+    //    m_animator.Update(_nextTime);
+    //}
+}
